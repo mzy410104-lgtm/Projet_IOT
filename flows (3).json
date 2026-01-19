@@ -50,14 +50,14 @@
         "type": "function",
         "z": "76e9c9ae0af3b4f9",
         "name": "function 2",
-        "func": "// 获取 TTN 解码后的数据\nvar p = msg.payload.uplink_message.decoded_payload;\n\n// 1. 安全检查：如果数据为空，直接返回\nif (!p) return null;\n\n// 2. 生成当前时间戳 (符合项目要求)\nvar ts = new Date().toISOString(); \n\n// 3. 准备 SQL 插入语句 (现在包含 ap3_mac 和 ap3_rssi)\nmsg.topic = `\n    INSERT INTO wifi_scans \n    (timestamp, ap1_mac, ap1_rssi, ap2_mac, ap2_rssi, ap3_mac, ap3_rssi) \n    VALUES \n    (?, ?, ?, ?, ?, ?, ?)\n`;\n\n// 4. 提取数据 (如果某个AP没扫到，使用空字符串和0代替，防止报错)\nvar m1 = p.AP1_MAC || \"\"; \nvar r1 = p.AP1_RSSI || 0;\n\nvar m2 = p.AP2_MAC || \"\"; \nvar r2 = p.AP2_RSSI || 0;\n\nvar m3 = p.AP3_MAC || \"\"; \nvar r3 = p.AP3_RSSI || 0;\n\n// 5. 将参数放入数组，传递给 SQLite 节点\nmsg.payload = [ts, m1, r1, m2, r2, m3, r3];\n\nreturn msg;",
+        "func": "\nvar p = msg.payload.uplink_message.decoded_payload;\n\nif (!p) return null;\n\nvar ts = new Date().toISOString(); \n\nmsg.topic = `\n    INSERT INTO wifi_scans \n    (timestamp, ap1_mac, ap1_rssi, ap2_mac, ap2_rssi, ap3_mac, ap3_rssi) \n    VALUES \n    (?, ?, ?, ?, ?, ?, ?)\n`;\n\nvar m1 = p.AP1_MAC || \"\"; \nvar r1 = p.AP1_RSSI || 0;\n\nvar m2 = p.AP2_MAC || \"\"; \nvar r2 = p.AP2_RSSI || 0;\n\nvar m3 = p.AP3_MAC || \"\"; \nvar r3 = p.AP3_RSSI || 0;\n\nmsg.payload = [ts, m1, r1, m2, r2, m3, r3];\n\nreturn msg;",
         "outputs": 1,
         "timeout": 0,
         "noerr": 0,
         "initialize": "",
         "finalize": "",
         "libs": [],
-        "x": 820,
+        "x": 880,
         "y": 280,
         "wires": [
             [
@@ -216,7 +216,7 @@
         "type": "function",
         "z": "76e9c9ae0af3b4f9",
         "name": "Prepare Query",
-        "func": "var p = msg.payload.uplink_message.decoded_payload;\nif (!p) return null;\n\nvar scans = [];\n// 循环提取 3 个 AP 的有效数据\nfor(var i=1; i<=3; i++) {\n    var mac = p[\"AP\"+i+\"_MAC\"];\n    var rssi = p[\"AP\"+i+\"_RSSI\"];\n    // 过滤无效 MAC\n    if (mac && mac !== \"00:00:00:00:00:00\") {\n        scans.push({mac: mac, rssi: rssi});\n    }\n}\n\nif (scans.length === 0) return null;\n\n// 备份扫描数据供下一步算法使用\nmsg.scan_data = scans;\n\n// 构建 SQL 查询：查找这些 MAC 的已知坐标\n// 语法: SELECT ... WHERE mac IN ('MAC1', 'MAC2')\nvar mac_list = scans.map(function(s){ return \"'\" + s.mac + \"'\"; }).join(\",\");\nmsg.topic = \"SELECT mac, gps_lat, gps_lon FROM ap_locations WHERE mac IN (\" + mac_list + \")\";\n\nreturn msg;",
+        "func": "var p = msg.payload.uplink_message.decoded_payload;\nif (!p) return null;\n\nvar scans = [];\nfor(var i=1; i<=3; i++) {\n    var mac = p[\"AP\"+i+\"_MAC\"];\n    var rssi = p[\"AP\"+i+\"_RSSI\"];\n    if (mac && mac !== \"00:00:00:00:00:00\") {\n        scans.push({mac: mac, rssi: rssi});\n    }\n}\n\nif (scans.length === 0) return null;\n\nmsg.scan_data = scans;\n\nvar mac_list = scans.map(function(s){ return \"'\" + s.mac + \"'\"; }).join(\",\");\nmsg.topic = \"SELECT mac, gps_lat, gps_lon FROM ap_locations WHERE mac IN (\" + mac_list + \")\";\n\nreturn msg;",
         "outputs": 1,
         "timeout": 0,
         "noerr": 0,
@@ -245,7 +245,6 @@
         "wires": [
             [
                 "729a0220f1d6b80f",
-                "98572c0e9fec3d38",
                 "d938b7f83b9f635f"
             ]
         ]
@@ -255,7 +254,7 @@
         "type": "function",
         "z": "76e9c9ae0af3b4f9",
         "name": "Calc Position",
-        "func": "var db_aps = msg.payload;       // 数据库返回的参考点 (包含 lat, lon)\nvar scan_aps = msg.scan_data;   // ESP32 发来的 RSSI\n\nif (!db_aps || db_aps.length === 0) return null;\n\nvar sum_w_lat = 0; // 加权纬度之和\nvar sum_w_lon = 0; // 加权经度之和\nvar sum_w = 0;     // 权重之和\n\nfor (var i = 0; i < db_aps.length; i++) {\n    var ref = db_aps[i];\n    \n    // 找到对应的 RSSI\n    var scan = scan_aps.find(function(s){ return s.mac === ref.mac; });\n    \n    if (scan) {\n        // 算法：信号越强，权重越大\n        // Weight = (RSSI + 100)^2\n        var w = Math.pow((scan.rssi + 100), 2);\n        if(w <= 0) w = 0.1;\n\n        // 累加 (注意这里用的是 gps_lat 和 gps_lon)\n        sum_w_lat += ref.gps_lat * w;\n        sum_w_lon += ref.gps_lon * w;\n        sum_w += w;\n    }\n}\n\nif (sum_w > 0) {\n    // 计算重心\n    var final_lat = sum_w_lat / sum_w;\n    var final_lon = sum_w_lon / sum_w;\n\n    // 构建 Worldmap 节点需要的格式\n    msg.payload = {\n        name: \"My ESP32\",    // 标记点的名字\n        lat: final_lat,      // 计算出的纬度\n        lon: final_lon,      // 计算出的经度\n        icon: \"user\",        // 图标 (font awesome)\n        iconColor: \"red\",    // 颜色\n        layer: \"Device\"      // 图层名称\n    };\n    return msg;\n}\nreturn null;",
+        "func": "var db_aps = msg.payload;      \nvar scan_aps = msg.scan_data;   \n\nif (!db_aps || db_aps.length === 0) return null;\n\nvar sum_w_lat = 0; \nvar sum_w_lon = 0; \nvar sum_w = 0;   \n\nfor (var i = 0; i < db_aps.length; i++) {\n    var ref = db_aps[i];\n\n    var scan = scan_aps.find(function(s){ return s.mac === ref.mac; });\n    \n    if (scan) {\n        // Weight = (RSSI + 100)^2\n        var w = Math.pow((scan.rssi + 100), 2);\n        if(w <= 0) w = 0.1;\n\n        sum_w_lat += ref.gps_lat * w;\n        sum_w_lon += ref.gps_lon * w;\n        sum_w += w;\n    }\n}\n\nif (sum_w > 0) {\n    var final_lat = sum_w_lat / sum_w;\n    var final_lon = sum_w_lon / sum_w;\n\n    msg.payload = {\n        name: \"My ESP32\", \n        lat: final_lat,     \n        lon: final_lon,    \n        icon: \"user\",      \n        iconColor: \"red\",  \n        layer: \"Device\"     \n    };\n    return msg;\n}\nreturn null;",
         "outputs": 1,
         "timeout": 0,
         "noerr": 0,
@@ -453,7 +452,7 @@
         "type": "function",
         "z": "76e9c9ae0af3b4f9",
         "name": "SQL",
-        "func": "// 1. 获取 CSV 解析后的数组\nvar rows = msg.payload;\n\n// 安全检查\nif (!rows || rows.length === 0) {\n    node.warn(\"CSV解析结果为空！\");\n    return null;\n}\n\nvar sqlValues = [];\n\n// 2. 遍历每一行数据\nfor (var i = 0; i < rows.length; i++) {\n    var r = rows[i];\n    \n    // 确保有 MAC 地址才处理\n    if (r.mac) {\n        // --- 数据清洗 ---\n        // 统一将 MAC 转为大写，防止匹配错误\n        var mac = r.mac.toUpperCase().trim(); \n        var ssid = (r.ssid || '').trim();\n        var lat = r.gps_lat || 0;\n        var lon = r.gps_lon || 0;\n        var room = (r.room || '').trim();\n        \n        // --- 构建 SQL 值 ---\n        // 格式: ('MAC', 'SSID', LAT, LON, 'ROOM')\n        sqlValues.push(`('${mac}', '${ssid}', ${lat}, ${lon}, '${room}')`);\n    }\n}\n\nif (sqlValues.length === 0) return null;\n\n// 3. 构建批量插入语句\n// 使用 INSERT OR REPLACE，这样如果 MAC 已存在，就会更新它的坐标\nvar sql = \"INSERT OR REPLACE INTO ap_locations (mac, ssid, gps_lat, gps_lon, room) VALUES \" + sqlValues.join(\",\");\n\nmsg.topic = sql;\nreturn msg;",
+        "func": "\nvar rows = msg.payload;\n\nif (!rows || rows.length === 0) {\n    node.warn(\"Le résultat de l'analyse CSV est vide !\");\n    return null;\n}\n\nvar sqlValues = [];\n\nfor (var i = 0; i < rows.length; i++) {\n    var r = rows[i];\n    \n    if (r.mac) {\n        var mac = r.mac.toString().toUpperCase().trim(); \n        \n        var ssid = (r.ssid || '').toString().trim().replace(/'/g, \"''\");\n        \n        var lat = r.gps_lat || 0;\n        var lon = r.gps_lon || 0;\n        \n        var room = (r.room || '').toString().trim().replace(/'/g, \"''\");\n\n        sqlValues.push(`('${mac}', '${ssid}', ${lat}, ${lon}, '${room}')`);\n    }\n}\n\nif (sqlValues.length === 0) return null;\n\nvar sql = \"INSERT OR REPLACE INTO ap_locations (mac, ssid, gps_lat, gps_lon, room) VALUES \" + sqlValues.join(\",\");\n\nmsg.topic = sql;\nreturn msg;",
         "outputs": 1,
         "timeout": 0,
         "noerr": 0,
@@ -546,7 +545,7 @@
         "type": "function",
         "z": "76e9c9ae0af3b4f9",
         "name": "Show APS",
-        "func": "var aps = msg.payload;\n\n// 遍历所有数据库里的 AP\nfor (var i = 0; i < aps.length; i++) {\n    var ap = aps[i];\n    // 为每个 AP 发送一个地图标记指令\n    node.send({\n        payload: {\n            name: ap.ssid,       // 标记 ID\n            lat: ap.gps_lat,     // 纬度\n            lon: ap.gps_lon,     // 经度\n            icon: \"wifi\",        // 使用 WiFi 图标 (FontAwesome)\n            iconColor: \"blue\",   // 蓝色表示基础设施\n            layer: \"Infrastructure\", // 单独一层，可在地图上开关\n            popup: \"Room: \" + ap.room + \"<br>MAC: \" + ap.mac // 点击弹窗信息\n        }\n    });\n}\nreturn null;",
+        "func": "var aps = msg.payload;\n\nfor (var i = 0; i < aps.length; i++) {\n    var ap = aps[i];\n\n    node.send({\n        payload: {\n            name: ap.ssid,     \n            lat: ap.gps_lat,   \n            lon: ap.gps_lon,     \n            icon: \"wifi\",      \n            iconColor: \"blue\",  \n            layer: \"Infrastructure\", \n            popup: \"Room: \" + ap.room + \"<br>MAC: \" + ap.mac // 点击弹窗信息\n        }\n    });\n}\nreturn null;",
         "outputs": 1,
         "timeout": 0,
         "noerr": 0,
@@ -610,31 +609,11 @@
         "wires": []
     },
     {
-        "id": "98572c0e9fec3d38",
-        "type": "function",
-        "z": "76e9c9ae0af3b4f9",
-        "name": "Nearest Algorithm",
-        "func": "// 获取输入数据\nvar db_aps = msg.payload;       // 数据库中已知的 AP 列表 (包含 gps_lat, gps_lon)\nvar scan_aps = msg.scan_data;   // ESP32 实时扫描到的 AP 列表 (包含 rssi)\n\nif (!db_aps || !scan_aps || db_aps.length === 0) return null;\n\n\nvar bestAP = null;\nvar maxRSSI = -127; \n\n// 1. 遍历数据库中的每一个已知 AP\nfor (var i = 0; i < db_aps.length; i++) {\n    var ref = db_aps[i];\n\n    // 2. 在扫描数据中寻找匹配的 MAC 地址\n    var scan = scan_aps.find(function(s){\n        return s.mac.toUpperCase() === ref.mac.toUpperCase();\n    });\n\n    if (scan) {\n        if (scan.rssi > maxRSSI) {\n            maxRSSI = scan.rssi;\n            bestAP = ref; \n        }\n    }\n}\n\n// --- 构建输出消息 ---\n\nif (bestAP) {\n    msg.payload = {\n        name: \"Nearest_Algo\",   // 标记的唯一 ID\n        lat: bestAP.gps_lat,    // 直接取路由器的纬度\n        lon: bestAP.gps_lon,    // 直接取路由器的经度\n\n        // --- 样式设置 (为了与原来的红点区分) ---\n        icon: \"crosshairs\",     // 图标：瞄准镜\n        iconColor: \"green\",     // 颜色：绿色 (Green)\n        layer: \"Algorithm_Comparison\", // 图层名称\n\n        // 弹窗信息\n        popup: \"<b>Nearest Algorithm</b><br>Locked to: \" + bestAP.ssid + \"<br>RSSI: \" + maxRSSI + \"dBm\"\n    };\n    return msg;\n}\n\nreturn null;",
-        "outputs": 1,
-        "timeout": 0,
-        "noerr": 0,
-        "initialize": "",
-        "finalize": "",
-        "libs": [],
-        "x": 1290,
-        "y": 460,
-        "wires": [
-            [
-                "a82c3dcf29d25798"
-            ]
-        ]
-    },
-    {
         "id": "d938b7f83b9f635f",
         "type": "function",
         "z": "76e9c9ae0af3b4f9",
         "name": "Algo: Geometric Trilateration",
-        "func": "// --- 参数设置 (需要根据实地测试微调) ---\nvar A = -55;  // 1米处的参考 RSSI (Reference Signal at 1m)\nvar n = 3.0;  // 室内环境衰减因子 (Path Loss Exponent, typically 2.5 - 4.0 indoors)\n\n// 获取数据库中的 AP 和扫描到的数据\nvar db_aps = msg.payload;      // 数据库已知点\nvar scan_aps = msg.scan_data;  // 实时扫描点\n\nif (!db_aps || !scan_aps || db_aps.length === 0) return null;\n\n// --- 1. 匹配数据并计算距离 ---\nvar anchors = [];\n\nfor (var i = 0; i < db_aps.length; i++) {\n    var ref = db_aps[i];\n    // 查找匹配的扫描数据\n    var scan = scan_aps.find(function(s){\n        return s.mac.toUpperCase() === ref.mac.toUpperCase();\n    });\n\n    if (scan) {\n        // [核心公式] RSSI 转 距离\n        var dist = Math.pow(10, (A - scan.rssi) / (10 * n));\n        \n        anchors.push({\n            x: ref.gps_lat, // 注意：这里把纬度当作 x，经度当作 y 进行平面计算\n            y: ref.gps_lon, // 这种近似在小范围内（如建筑物内）是完全可行的\n            r: dist,        // 半径\n            ssid: ref.ssid\n        });\n    }\n}\n\n// 至少需要 3 个点才能进行三角定位\nif (anchors.length < 3) {\n    node.warn(\"几何定位需要至少 3 个 AP，当前只有: \" + anchors.length);\n    return null; \n}\n\n// 选取信号最强（距离最近）的前 3 个点来计算，以提高精度\nanchors.sort(function(a, b){ return a.r - b.r; });\nvar p1 = anchors[0];\nvar p2 = anchors[1];\nvar p3 = anchors[2];\n\n// --- 2. 三边测量几何算法 (Linearized Trilateration) ---\n// 我们通过解线性方程组来求交点 (x, y)\n// 算法推导基于：2x(x2-x1) + 2y(y2-y1) = r1^2 - r2^2 - x1^2 + x2^2 - y1^2 + y2^2\n\nvar x1 = p1.x, y1 = p1.y, r1 = p1.r;\nvar x2 = p2.x, y2 = p2.y, r2 = p2.r;\nvar x3 = p3.x, y3 = p3.y, r3 = p3.r;\n\nvar A_val = 2 * x2 - 2 * x1;\nvar B_val = 2 * y2 - 2 * y1;\nvar C_val = Math.pow(r1, 2) - Math.pow(r2, 2) - Math.pow(x1, 2) + Math.pow(x2, 2) - Math.pow(y1, 2) + Math.pow(y2, 2);\n\nvar D_val = 2 * x3 - 2 * x2;\nvar E_val = 2 * y3 - 2 * y2;\nvar F_val = Math.pow(r2, 2) - Math.pow(r3, 2) - Math.pow(x2, 2) + Math.pow(x3, 2) - Math.pow(y2, 2) + Math.pow(y3, 2);\n\n// 使用克莱姆法则 (Cramer's Rule) 或直接代入求解线性方程\nvar x = (C_val * E_val - F_val * B_val) / (E_val * A_val - B_val * D_val);\nvar y = (C_val * D_val - A_val * F_val) / (B_val * D_val - A_val * E_val);\n\n// 简单的边界检查，防止计算结果飞到地球另一边\nif (isNaN(x) || isNaN(y)) return null;\n\n// --- 构建输出 ---\nmsg.payload = {\n    name: \"Algo_Geometric\",\n    lat: x,\n    lon: y,\n    icon: \"star\",        // 星形图标\n    iconColor: \"orange\", // 橙色\n    layer: \"Algorithm_Comparison\",\n    popup: \"Geometric Triangulation<br>Distances: \" + r1.toFixed(1) + \"m, \" + r2.toFixed(1) + \"m, \" + r3.toFixed(1) + \"m\"\n};\n\nreturn msg;",
+        "func": "\nvar A = -55;\nvar n = 3.0;\n\nvar db_aps = msg.payload;      \nvar scan_aps = msg.scan_data; \n\nif (!db_aps || db_aps.length === 0) {\n    node.warn(\"Erreur : les données de la base de données (db_aps) sont vides.\");\n    return null;\n}\nif (!scan_aps || scan_aps.length === 0) {\n    node.warn(\"Erreur : les données de scan (scan_aps) sont vides.\");\n    return null;\n}\n\nvar anchors = [];\n\nfor (var i = 0; i < db_aps.length; i++) {\n    var ref = db_aps[i];\n        var match = scan_aps.find(function(s){\n        var mac1 = s.mac.toString().toUpperCase().trim();\n        var mac2 = ref.mac.toString().toUpperCase().trim();\n        return mac1 === mac2;\n    });\n\n    if (match) {\n        var dist = Math.pow(10, (A - match.rssi) / (10 * n));\n        anchors.push({\n            x: ref.gps_lat,\n            y: ref.gps_lon,\n            r: dist,\n            ssid: ref.ssid\n        });\n    }\n}\n\nif (anchors.length < 3) {\n    node.warn(\"Échec : nombre insuffisant de points d'accès correspondants (moins de 3).: \" + anchors.length + \" 个。\");\n    return null; \n}\n\nanchors.sort(function(a, b){ return a.r - b.r; });\nvar p1 = anchors[0];\nvar p2 = anchors[1];\nvar p3 = anchors[2];\n\nvar x1 = p1.x, y1 = p1.y, r1 = p1.r;\nvar x2 = p2.x, y2 = p2.y, r2 = p2.r;\nvar x3 = p3.x, y3 = p3.y, r3 = p3.r;\n\nvar A_val = 2 * x2 - 2 * x1;\nvar B_val = 2 * y2 - 2 * y1;\nvar C_val = Math.pow(r1, 2) - Math.pow(r2, 2) - Math.pow(x1, 2) + Math.pow(x2, 2) - Math.pow(y1, 2) + Math.pow(y2, 2);\n\nvar D_val = 2 * x3 - 2 * x2;\nvar E_val = 2 * y3 - 2 * y2;\nvar F_val = Math.pow(r2, 2) - Math.pow(r3, 2) - Math.pow(x2, 2) + Math.pow(x3, 2) - Math.pow(y2, 2) + Math.pow(y3, 2);\n\nvar denominator = E_val * A_val - B_val * D_val;\n\nif (Math.abs(denominator) < 0.00001) {\n    node.warn(\"Échec : erreur mathématique, trois points colinéaires, insoluble (dénominateur égal à zéro)\");\n    return null;\n}\n\nvar x = (C_val * E_val - F_val * B_val) / denominator;\nvar y = (C_val * D_val - A_val * F_val) / denominator; \nif (isNaN(x) || isNaN(y)) {\n    node.warn(\"Échec : le résultat du calcul est NaN.\");\n    return null;\n}\n\nmsg.payload = {\n    name: \"Algo_Geometric\",\n    lat: x,\n    lon: y,\n    icon: \"star\",\n    iconColor: \"orange\",\n    layer: \"Algorithm_Comparison\",\n    popup: \"Geometric: \" + anchors.length + \" APs used\"\n};\n\nreturn msg;",
         "outputs": 1,
         "timeout": 0,
         "noerr": 0,
@@ -645,9 +624,27 @@
         "y": 520,
         "wires": [
             [
-                "a82c3dcf29d25798"
+                "a82c3dcf29d25798",
+                "d406f7fef234ae1b"
             ]
         ]
+    },
+    {
+        "id": "d406f7fef234ae1b",
+        "type": "debug",
+        "z": "76e9c9ae0af3b4f9",
+        "name": "debug 17",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 1600,
+        "y": 620,
+        "wires": []
     },
     {
         "id": "e7c82748d7197fef",
@@ -684,7 +681,7 @@
         "mode": "RWC"
     },
     {
-        "id": "3fdc72f1e54cbd4e",
+        "id": "ca88758478baf906",
         "type": "global-config",
         "env": [],
         "modules": {

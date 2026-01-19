@@ -5,7 +5,7 @@
 // --- Configuration LoRa E5 ---
 HardwareSerial loraSerial(2); // UART2: RX=16, TX=17
 
-// --- TTN (OTAA) 凭证 ---
+// --- TTN (OTAA)  ---
 const char* devEUI = "70B3D57ED0073415";
 const char* appEUI = "0000000000000000";
 const char* appKey = "44B8F00FFE627DC84F204831CF7519C6";
